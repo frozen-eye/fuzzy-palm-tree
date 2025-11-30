@@ -1,0 +1,47 @@
+.program uart_tx
+.side_set 1 opt      ; 1 extra "side" bit — используем как линию TX
+
+; OSR содержит байт для отправки.
+; Тактировать PIO нужно так, чтобы:
+;     freq = baud * 8
+; (каждый бит — 8 тактов)
+
+pull        block         ; ждём байт в TX FIFO
+set x, 7                  ; 8 бит
+
+; Старт бит (0)
+set pins, 0      side 0   [7]
+
+bitloop:
+    out pins, 1  side 1   [7] ; отправляем 1 бит данных, линия = bit
+    jmp x-- bitloop       ; 8 раз
+
+; Стоп бит (1)
+set pins, 1      side 1   [7]
+
+% c-sdk {
+static inline void uart_tx_program_init(PIO pio, uint sm, uint pin, uint baud) {
+    // Ставим пин как output
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    uint offset = pio_add_program(pio, &uart_tx_program);
+
+    pio_sm_config c = uart_tx_program_get_default_config(offset);
+
+    // Сайдсет на один пин, тот же что и обычный (один пин TX)
+    sm_config_set_sideset_pins(&c, pin);
+    sm_config_set_out_pins(&c, pin, 1);
+
+    // Настройка тактирования: clk_sys / (baud * 8)
+    float div = (float)clock_get_hz(clk_sys) / (baud * 8.0f);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void uart_tx_putc(PIO pio, uint sm, uint8_t c) {
+    pio_sm_put_blocking(pio, sm, c);
+}
+%}
