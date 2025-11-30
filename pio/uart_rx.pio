@@ -1,0 +1,61 @@
+.program uart_rx
+; RX сидит на обычном пине (pins), без sideset
+
+; Допущение: частота PIO такая же: freq = baud * 8
+
+; Ждём перехода 1->0 (старт бит)
+wait_for_start:
+    wait 1 pin 0      ; ждём линию в 1 (idle)
+    wait 0 pin 0      ; ждём 0 — старт
+
+    ; Пол-бит тайм для выборки середины бита
+    set x, 3          ; 4 такта (0..3), (полбит = 4 такта при 8 на бит)
+bit_center_delay:
+    nop         [1]
+    jmp x-- bit_center_delay
+
+    ; Теперь в середине первого дата-бита
+    set x, 7          ; 8 бит
+    set y, 0          ; очистим shift-аккумулятор
+
+bitloop:
+    in pins, 1        ; читаем 1 бит
+    jmp x-- bitloop   ; 8 раз
+
+    ; Стоп бит можно просто пропустить (1 бит = 8 тактов)
+    set x, 7
+stop_delay:
+    nop         [1]
+    jmp x-- stop_delay
+
+    ; Сдвигаем в FIFO
+    push block
+
+    jmp wait_for_start
+
+% c-sdk {
+static inline void uart_rx_program_init(PIO pio, uint sm, uint pin, uint baud) {
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false); // input
+
+    uint offset = pio_add_program(pio, &uart_rx_program);
+
+    pio_sm_config c = uart_rx_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, pin);
+    sm_config_set_jmp_pin(&c, pin);
+
+    // shift 8 бит за раз, LSB first
+    sm_config_set_in_shift(&c, true, true, 8);
+
+    float div = (float)clock_get_hz(clk_sys) / (baud * 8.0f);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline uint8_t uart_rx_getc(PIO pio, uint sm) {
+    return (uint8_t)pio_sm_get_blocking(pio, sm);
+}
+%}
